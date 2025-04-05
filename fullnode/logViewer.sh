@@ -1,0 +1,1 @@
+tail -f /home/ubuntu/snapshots/testnet/server/data-seed/bsc.log
