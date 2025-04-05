@@ -1,5 +1,5 @@
-geth --config /home/ubuntu/bsc-mempool-monitor/fullnode/mainnet/config.toml \
-  --datadir mainnet-geth-pbss-20250310 \
+geth --config ./config.toml \
+  --datadir /home/ubuntu/snapshots/current \
   --cache 8000 \
   --cache.preimages \
   --snapshot=false \
