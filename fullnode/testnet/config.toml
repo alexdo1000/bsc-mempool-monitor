@@ -1,6 +1,7 @@
 [Eth]
 NetworkId = 97
-LightPeers = 100
+LightPeers = 200
+StateScheme = "path"
 
 [Eth.Miner]
 GasCeil = 40000000
@@ -14,15 +15,15 @@ Journal = "transactions.rlp"
 Rejournal = 3600000000000
 PriceLimit = 1000000000
 PriceBump = 10
-AccountSlots = 16
-GlobalSlots = 4096
-AccountQueue = 64
-GlobalQueue = 1024
-Lifetime = 10800000000000
+AccountSlots = 64
+GlobalSlots = 16384
+AccountQueue = 256
+GlobalQueue = 4096
+Lifetime = 3600000000000
 
 [Eth.GPO]
-Blocks = 20
-Percentile = 60
+Blocks = 5
+Percentile = 50
 OracleThreshold = 1000
 
 [Node]
@@ -48,4 +49,4 @@ StaticNodes = ["enode://0637d1e62026e0c8685b1db0ca1c767c78c95c3fab64abc468d1a64b
 FileRoot = ""
 FilePath = "bsc.log"
 MaxBytesSize = 10485760
-Level = "info" 
+Level = "error" 
