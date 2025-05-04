@@ -1,7 +1,7 @@
 use ethers::{
     prelude::*,
     providers::{Provider, Ws},
-    types::{Transaction, H160},
+    types::{Transaction, H160, U256},
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use crate::{
     config::Config,
     transaction_stats::{TransactionStats, SharedStats},
     conversions::{wei_to_eth, wei_to_gwei},
+    frontrunner::Frontrunner,
 };
 
 // Known DEX router addresses on BSC
@@ -39,15 +40,17 @@ pub struct MempoolMonitor {
     worker_handles: Vec<JoinHandle<()>>,
     // Track recent transactions for sandwich detection
     recent_transactions: Arc<Mutex<HashMap<H160, Vec<Transaction>>>>,
+    frontrunner: Frontrunner,
 }
 
 impl MempoolMonitor {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, provider: Arc<Provider<Ws>>) -> Self {
         Self {
-            config,
+            config: config.clone(),
             stats: Arc::new(Mutex::new(TransactionStats::new())),
             worker_handles: Vec::new(),
             recent_transactions: Arc::new(Mutex::new(HashMap::new())),
+            frontrunner: Frontrunner::new(config, provider),
         }
     }
 
@@ -81,12 +84,13 @@ impl MempoolMonitor {
             let stats = self.stats.clone();
             let provider = provider.clone();
             let recent_txs = self.recent_transactions.clone();
+            let frontrunner = self.frontrunner.clone();
             
             let handle = tokio::spawn(async move {
                 println!("Worker {} started", worker_id);
                 while let Some(tx_hash) = rx.recv().await {
                     if let Ok(Some(tx)) = provider.get_transaction(tx_hash).await {
-                        Self::process_transaction(&stats, &recent_txs, &tx).await;
+                        Self::process_transaction(&stats, &recent_txs, &frontrunner, &tx).await;
                     }
                 }
             });
@@ -132,7 +136,12 @@ impl MempoolMonitor {
         });
     }
 
-    async fn process_transaction(stats: &SharedStats, recent_txs: &Arc<Mutex<HashMap<H160, Vec<Transaction>>>>, tx: &Transaction) {
+    async fn process_transaction(
+        stats: &SharedStats,
+        recent_txs: &Arc<Mutex<HashMap<H160, Vec<Transaction>>>>,
+        frontrunner: &Frontrunner,
+        tx: &Transaction,
+    ) {
         let is_dex_router = DEX_ROUTERS.contains(&tx.to.unwrap_or_default().to_string().as_str());
         let is_mev_bot = MEV_BOTS.contains(&tx.from.to_string().as_str());
         let gas_price = wei_to_gwei(tx.gas_price.unwrap_or_default());
@@ -145,6 +154,25 @@ impl MempoolMonitor {
         if is_dex_router {
             is_frontrunnable = true;
             frontrun_reason.push_str("DEX Swap");
+            
+            // Try to frontrun DEX swaps
+            if let Some(to) = tx.to {
+                let path = vec![tx.from, to]; // Adjust path based on actual tokens
+                let amount_in = tx.value;
+                let min_profit = U256::from(parse_units("0.1", "ether").unwrap());
+                
+                if let Ok(profit) = frontrunner.calculate_profit(to, amount_in, path.clone()).await {
+                    if profit >= min_profit {
+                        println!("🚨 PROFITABLE FRONTRUN OPPORTUNITY 🚨");
+                        println!("Expected profit: {} BNB", wei_to_eth(profit));
+                        
+                        // Execute the frontrun
+                        if let Err(e) = frontrunner.execute_frontrun(to, amount_in, min_profit, path).await {
+                            eprintln!("Failed to execute frontrun: {}", e);
+                        }
+                    }
+                }
+            }
         }
 
         if value > 1.0 {

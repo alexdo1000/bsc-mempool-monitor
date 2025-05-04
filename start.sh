@@ -1,1 +1,1 @@
-./target/release/bsc-mempool-monitor --ws ws://localhost:8546
+./target/release/bsc-mempool-monitor --ws ws://localhost:8576 --frontrunner-contract asda
