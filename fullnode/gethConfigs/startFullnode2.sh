@@ -1,4 +1,4 @@
-geth --config /home/ubuntu/bsc-mempool-monitor/fullnode/mainnet/config.toml \
+geth --config /home/ubuntu/bsc-mempool-monitor/gethConfigs/fullnode/mainnet/config.toml \
   --datadir /home/ubuntu/full/geth \
   --cache 24000 \
   --cache.preimages \
