@@ -1,8 +1,15 @@
 geth --config /home/ubuntu/bsc-mempool-monitor/fullnode/mainnet/config.toml \
-  --datadir mainnet-geth-pbss-20250310 \
-  --cache 8000 \
+  --datadir /home/ubuntu/full/geth \
+  --cache 24000 \
   --cache.preimages \
-  --snapshot=false \
   --syncmode snap \
   --state.scheme path \
-  --maxpeers 50
+  --ws \
+  --ws.addr 0.0.0.0 \
+  --ws.port 8576 \
+  --ws.api eth,net,web3,txpool \
+  --history.transactions=90000 \
+  --db.engine=pebble \
+  --tries-verify-mode=local \
+  --snapshot=true
+  # --snapshot=false \

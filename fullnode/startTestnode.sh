@@ -11,13 +11,13 @@
 
 # Performance optimized geth startup script for low latency mempool monitoring
 geth --config /home/ubuntu/bsc-mempool-monitor/fullnode/testnet/config.toml \
---datadir /home/ubuntu/snapshots/testnet/server/data-seed \
---cache 24000 \
---cache.preimages \
---snapshot=false \
---syncmode snap \
---state.scheme path \
---ws \
---ws.addr 0.0.0.0 \
---ws.port 8576 \
---ws.api eth,net,web3,txpool \
+    --datadir /home/ubuntu/snapshots/testnet/server/data-seed \
+    --cache 24000 \
+    --cache.preimages \
+    --snapshot=false \
+    --syncmode snap \
+    --state.scheme path \
+    --ws \
+    --ws.addr 0.0.0.0 \
+    --ws.port 8576 \
+    --ws.api eth,net,web3,txpool \
