@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Create logs directory if it doesn't exist
+mkdir -p /home/ubuntu/full/erigon/logs
+
 erigon \
   --config /home/ubuntu/bsc-mempool-monitor/fullnode/gethConfigs/mainnet/erigon-config.toml \
   --datadir /home/ubuntu/full/erigon \
@@ -28,6 +31,6 @@ erigon \
   --db.read.concurrency 4 \
   --log.console.verbosity 4 \
   --log.dir.verbosity 4 \
-  --log.dir.path ./logs \
+  --log.dir.path /home/ubuntu/full/erigon/logs \
   --log.dir.prefix erigon
 #   --torrent.download.rate 20mb
