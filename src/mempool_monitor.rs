@@ -33,6 +33,9 @@ const MEV_BOTS: [&str; 5] = [
     "0x0000000000000000000000000000000000000000",
 ];
 
+const BATCH_SIZE: usize = 100; // Increased batch size for Erigon
+const WORKER_BUFFER_SIZE: usize = 5000; // Increased buffer size for Erigon
+
 pub struct MempoolMonitor {
     config: Config,
     stats: SharedStats,
@@ -54,16 +57,34 @@ impl MempoolMonitor {
     pub async fn start(&mut self) -> eyre::Result<()> {
         println!("Connecting to BSC node at {}", self.config.ws_url);
 
-        // Connect to the node
-        let ws = Ws::connect_with_reconnects(&self.config.ws_url, 5).await?;
+        // Connect to the node with increased reconnection attempts and proper error handling
+        let ws = match Ws::connect_with_reconnects(&self.config.ws_url, 10).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("Failed to connect to WebSocket: {}", e);
+                eprintln!("Please ensure Erigon is running and the WebSocket endpoint is correct");
+                eprintln!("Current URL: {}", self.config.ws_url);
+                return Err(e.into());
+            }
+        };
+        
         let provider = Provider::new(ws);
         let provider = Arc::new(provider);
+
+        // Verify connection by making a simple RPC call
+        match provider.get_block_number().await {
+            Ok(_) => println!("Successfully connected to BSC node"),
+            Err(e) => {
+                eprintln!("Failed to verify connection: {}", e);
+                return Err(e.into());
+            }
+        }
 
         // Start statistics reporting
         self.start_stats_reporting();
 
         // Start worker threads
-        let num_workers = num_cpus::get(); // Use number of CPU cores
+        let num_workers = num_cpus::get() * 2; // Double the workers for Erigon
         println!("Starting {} worker threads for transaction processing", num_workers);
         
         // Create channels for each worker
@@ -71,12 +92,12 @@ impl MempoolMonitor {
         let mut worker_receivers = Vec::with_capacity(num_workers);
         
         for _ in 0..num_workers {
-            let (tx, rx) = tokio::sync::mpsc::channel(1000); // Buffer size of 1000 transactions
+            let (tx, rx) = tokio::sync::mpsc::channel(WORKER_BUFFER_SIZE);
             worker_senders.push(tx);
             worker_receivers.push(rx);
         }
         
-        // Start workers
+        // Start workers with batch processing
         for (worker_id, mut rx) in worker_receivers.into_iter().enumerate() {
             let stats = self.stats.clone();
             let provider = provider.clone();
@@ -84,9 +105,39 @@ impl MempoolMonitor {
             
             let handle = tokio::spawn(async move {
                 println!("Worker {} started", worker_id);
+                let mut batch = Vec::with_capacity(BATCH_SIZE);
+                
                 while let Some(tx_hash) = rx.recv().await {
-                    if let Ok(Some(tx)) = provider.get_transaction(tx_hash).await {
-                        Self::process_transaction(&stats, &recent_txs, &tx).await;
+                    batch.push(tx_hash);
+                    
+                    if batch.len() >= BATCH_SIZE {
+                        // Process batch
+                        let mut futures = Vec::with_capacity(batch.len());
+                        for hash in batch.drain(..) {
+                            futures.push(provider.get_transaction(hash));
+                        }
+                        
+                        let results = futures::future::join_all(futures).await;
+                        for result in results {
+                            if let Ok(Some(tx)) = result {
+                                Self::process_transaction(&stats, &recent_txs, &tx).await;
+                            }
+                        }
+                    }
+                }
+                
+                // Process remaining transactions
+                if !batch.is_empty() {
+                    let mut futures = Vec::with_capacity(batch.len());
+                    for hash in batch {
+                        futures.push(provider.get_transaction(hash));
+                    }
+                    
+                    let results = futures::future::join_all(futures).await;
+                    for result in results {
+                        if let Ok(Some(tx)) = result {
+                            Self::process_transaction(&stats, &recent_txs, &tx).await;
+                        }
                     }
                 }
             });
@@ -100,7 +151,6 @@ impl MempoolMonitor {
 
         let mut worker_index = 0;
         while let Some(tx_hash) = stream.next().await {
-            // Round-robin distribution of transactions to workers
             if let Err(e) = worker_senders[worker_index].send(tx_hash).await {
                 eprintln!("Error sending transaction to worker {}: {}", worker_index, e);
             }
