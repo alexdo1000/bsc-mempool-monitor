@@ -1,35 +1,28 @@
-use clap::{App, Arg};
+use clap::Parser;
+use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 pub struct Config {
+    /// WebSocket URL of the BSC node
+    #[arg(short = 'w', long, default_value = "ws://localhost:8576")]
     pub ws_url: String,
+
+    /// Report interval in seconds
+    #[arg(short = 'i', long, default_value = "5")]
     pub report_interval: u64,
+
+    /// Frontrunner contract address
+    #[arg(short = 'f', long)]
+    pub frontrunner_contract: String,
+
+    /// Minimum profit threshold in BNB
+    #[arg(short = 'p', long, default_value = "0.1")]
+    pub min_profit_threshold: f64,
 }
 
 impl Config {
-    pub fn from_args() -> Self {
-        let matches = App::new("BSC Mempool Monitor")
-            .version("1.0")
-            .about("Monitors BSC mempool for new transactions")
-            .arg(Arg::with_name("ws_url")
-                .short('w')
-                .long("ws")
-                .value_name("WS_URL")
-                .help("WebSocket URL of your BSC node")
-                .default_value("ws://localhost:8576")
-                .takes_value(true))
-            .arg(Arg::with_name("report_interval")
-                .short('i')
-                .long("interval")
-                .value_name("SECONDS")
-                .help("Interval in seconds between statistics reports")
-                .default_value("60")
-                .takes_value(true))
-            .get_matches();
-
-        Self {
-            ws_url: matches.value_of("ws_url").unwrap().to_string(),
-            report_interval: matches.value_of("report_interval").unwrap().parse().unwrap_or(60),
-        }
+    pub fn report_interval(&self) -> Duration {
+        Duration::from_secs(self.report_interval)
     }
 } 
