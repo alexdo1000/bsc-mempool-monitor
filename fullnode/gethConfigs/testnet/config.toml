@@ -19,6 +19,9 @@ GlobalSlots = 16384
 AccountQueue = 256
 GlobalQueue = 4096
 Lifetime = 3600000000000
+AllowPrivateTx = true
+PrivateTxLimit = 1000
+PrivateTxTimeout = 5000
 
 [Eth.GPO]
 Blocks = 5
