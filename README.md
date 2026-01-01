@@ -1,6 +1,6 @@
 # BSC Mempool Monitor & Full Node Implementation
 
-A high-performance, production-ready system for monitoring the Binance Smart Chain (BSC) mempool in real-time, built with Rust and Erigon. This project demonstrates expertise in blockchain infrastructure, concurrent systems programming, and low-latency transaction processing.
+A high-performance system for monitoring the Binance Smart Chain (BSC) mempool in real-time, built with Rust and Erigon. This project demonstrates expertise in blockchain infrastructure, concurrent systems programming, and low-latency transaction processing.
 
 ## 🚀 Overview
 
