@@ -1,7 +1,7 @@
 use ethers::{
     prelude::*,
     providers::{Provider, Ws},
-    types::Transaction,
+    types::{Transaction, H160, U256},
 };
 use futures::StreamExt;
 use std::sync::Arc;
@@ -9,41 +9,85 @@ use tokio::sync::Mutex;
 use chrono::Utc;
 use tokio::task::JoinHandle;
 use std::time::Duration;
+use std::collections::HashMap;
 
 use crate::{
     config::Config,
     transaction_stats::{TransactionStats, SharedStats},
     conversions::{wei_to_eth, wei_to_gwei},
+    frontrunner::Frontrunner,
 };
+
+// Known DEX router addresses on BSC
+const DEX_ROUTERS: [&str; 3] = [
+    "0x10ED43C718714eb63d5aA57B78B54704E256024E", // PancakeSwap V2
+    "0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F", // PancakeSwap V1
+    "0x7DAe51BD3E3376B8c7c4900E9107f12Be3AF1bA8", // ApeSwap
+];
+
+// Known MEV bot addresses
+const MEV_BOTS: [&str; 5] = [
+    "0x0000000000007F150Bd6f54c40A34d7C3d5e9f56", // Common MEV bot
+    "0x000000000000084e91743124a982076C59f10084", // Another common MEV bot
+    "0x0000000000000000000000000000000000000000", // Add more known MEV bots
+    "0x0000000000000000000000000000000000000000",
+    "0x0000000000000000000000000000000000000000",
+];
+
+const BATCH_SIZE: usize = 100; // Increased batch size for Erigon
+const WORKER_BUFFER_SIZE: usize = 5000; // Increased buffer size for Erigon
 
 pub struct MempoolMonitor {
     config: Config,
     stats: SharedStats,
     worker_handles: Vec<JoinHandle<()>>,
+    // Track recent transactions for sandwich detection
+    recent_transactions: Arc<Mutex<HashMap<H160, Vec<Transaction>>>>,
+    frontrunner: Frontrunner,
 }
 
 impl MempoolMonitor {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, provider: Arc<Provider<Ws>>) -> Self {
         Self {
-            config,
+            config: config.clone(),
             stats: Arc::new(Mutex::new(TransactionStats::new())),
             worker_handles: Vec::new(),
+            recent_transactions: Arc::new(Mutex::new(HashMap::new())),
+            frontrunner: Frontrunner::new(config, provider),
         }
     }
 
     pub async fn start(&mut self) -> eyre::Result<()> {
         println!("Connecting to BSC node at {}", self.config.ws_url);
 
-        // Connect to the node
-        let ws = Ws::connect_with_reconnects(&self.config.ws_url, 5).await?;
+        // Connect to the node with increased reconnection attempts and proper error handling
+        let ws = match Ws::connect_with_reconnects(&self.config.ws_url, 10).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                eprintln!("Failed to connect to WebSocket: {}", e);
+                eprintln!("Please ensure Erigon is running and the WebSocket endpoint is correct");
+                eprintln!("Current URL: {}", self.config.ws_url);
+                return Err(e.into());
+            }
+        };
+        
         let provider = Provider::new(ws);
         let provider = Arc::new(provider);
+
+        // Verify connection by making a simple RPC call
+        match provider.get_block_number().await {
+            Ok(_) => println!("Successfully connected to BSC node"),
+            Err(e) => {
+                eprintln!("Failed to verify connection: {}", e);
+                return Err(e.into());
+            }
+        }
 
         // Start statistics reporting
         self.start_stats_reporting();
 
         // Start worker threads
-        let num_workers = num_cpus::get(); // Use number of CPU cores
+        let num_workers = num_cpus::get() * 2; // Double the workers for Erigon
         println!("Starting {} worker threads for transaction processing", num_workers);
         
         // Create channels for each worker
@@ -51,21 +95,25 @@ impl MempoolMonitor {
         let mut worker_receivers = Vec::with_capacity(num_workers);
         
         for _ in 0..num_workers {
-            let (tx, rx) = tokio::sync::mpsc::channel(1000); // Buffer size of 1000 transactions
+            let (tx, rx) = tokio::sync::mpsc::channel(WORKER_BUFFER_SIZE);
             worker_senders.push(tx);
             worker_receivers.push(rx);
         }
         
-        // Start workers
+        // Start workers with batch processing
         for (worker_id, mut rx) in worker_receivers.into_iter().enumerate() {
             let stats = self.stats.clone();
             let provider = provider.clone();
+            let recent_txs = self.recent_transactions.clone();
+            let frontrunner = self.frontrunner.clone();
             
             let handle = tokio::spawn(async move {
                 println!("Worker {} started", worker_id);
+                let mut batch = Vec::with_capacity(BATCH_SIZE);
+                
                 while let Some(tx_hash) = rx.recv().await {
                     if let Ok(Some(tx)) = provider.get_transaction(tx_hash).await {
-                        Self::process_transaction(&stats, &tx).await;
+                        Self::process_transaction(&stats, &recent_txs, &frontrunner, &tx).await;
                     }
                 }
             });
@@ -79,7 +127,6 @@ impl MempoolMonitor {
 
         let mut worker_index = 0;
         while let Some(tx_hash) = stream.next().await {
-            // Round-robin distribution of transactions to workers
             if let Err(e) = worker_senders[worker_index].send(tx_hash).await {
                 eprintln!("Error sending transaction to worker {}: {}", worker_index, e);
             }
@@ -111,19 +158,95 @@ impl MempoolMonitor {
         });
     }
 
-    async fn process_transaction(stats: &SharedStats, tx: &Transaction) {
-        println!("[{}] ===== NEW TRANSACTION =====", Utc::now().format("%H:%M:%S"));
+    async fn process_transaction(
+        stats: &SharedStats,
+        recent_txs: &Arc<Mutex<HashMap<H160, Vec<Transaction>>>>,
+        frontrunner: &Frontrunner,
+        tx: &Transaction,
+    ) {
+        let is_dex_router = DEX_ROUTERS.contains(&tx.to.unwrap_or_default().to_string().as_str());
+        let is_mev_bot = MEV_BOTS.contains(&tx.from.to_string().as_str());
+        let gas_price = wei_to_gwei(tx.gas_price.unwrap_or_default());
+        let value = wei_to_eth(tx.value);
+
+        // Check for potential frontrunning opportunities
+        let mut is_frontrunnable = false;
+        let mut frontrun_reason = String::new();
+
+        if is_dex_router {
+            is_frontrunnable = true;
+            frontrun_reason.push_str("DEX Swap");
+            
+            // Try to frontrun DEX swaps
+            if let Some(to) = tx.to {
+                let path = vec![tx.from, to]; // Adjust path based on actual tokens
+                let amount_in = tx.value;
+                let min_profit = U256::from(parse_units("0.1", "ether").unwrap());
+                
+                if let Ok(profit) = frontrunner.calculate_profit(to, amount_in, path.clone()).await {
+                    if profit >= min_profit {
+                        println!("🚨 PROFITABLE FRONTRUN OPPORTUNITY 🚨");
+                        println!("Expected profit: {} BNB", wei_to_eth(profit));
+                        
+                        // Execute the frontrun
+                        if let Err(e) = frontrunner.execute_frontrun(to, amount_in, min_profit, path).await {
+                            eprintln!("Failed to execute frontrun: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if value > 1.0 {
+            is_frontrunnable = true;
+            frontrun_reason.push_str(&format!(" | High Value: {} BNB", value));
+        }
+
+        if gas_price > 5.0 {
+            is_frontrunnable = true;
+            frontrun_reason.push_str(&format!(" | High Gas: {} gwei", gas_price));
+        }
+
+        if is_mev_bot {
+            is_frontrunnable = true;
+            frontrun_reason.push_str(" | MEV Bot");
+        }
+
+        // Print transaction with frontrunning indicators
+        println!("\n[{}] ===== NEW TRANSACTION =====", Utc::now().format("%H:%M:%S"));
+        if is_frontrunnable {
+            println!("🚨 POTENTIAL FRONTRUN OPPORTUNITY 🚨");
+            println!("Reason: {}", frontrun_reason);
+        }
         println!("  Hash: {:?}", tx.hash);
         println!("  From: {:?}", tx.from);
         println!("  To: {:?}", tx.to);
-        println!("  Value: {} BNB", wei_to_eth(tx.value));
-        println!("  Gas Price: {} gwei", wei_to_gwei(tx.gas_price.unwrap_or_default()));
+        println!("  Value: {} BNB", value);
+        println!("  Gas Price: {} gwei", gas_price);
         println!("  Gas Limit: {}", tx.gas);
         println!("  Nonce: {}", tx.nonce);
+        if is_dex_router {
+            println!("  Type: DEX Router Interaction");
+        }
+        if is_mev_bot {
+            println!("  Type: MEV Bot Transaction");
+        }
         println!("  ============================");
 
         // Update stats
         let mut stats_lock = stats.lock().await;
         stats_lock.update(tx);
+
+        // Update recent transactions for sandwich detection
+        if let Some(to) = tx.to {
+            let mut recent_txs_lock = recent_txs.lock().await;
+            let txs = recent_txs_lock.entry(to).or_insert_with(Vec::new);
+            txs.push(tx.clone());
+            
+            // Keep only last 10 transactions per address
+            if txs.len() > 10 {
+                txs.remove(0);
+            }
+        }
     }
 } 

@@ -1,0 +1,14 @@
+/home/ubuntu/full/erigon/logs/erigon.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 ubuntu ubuntu
+    su ubuntu ubuntu
+    sharedscripts
+    postrotate
+        pkill -USR1 erigon
+    endscript
+}
