@@ -215,10 +215,6 @@ Then run the monitor against the testnet node.
 
 This is a personal project, but suggestions and improvements are welcome!
 
-## 📄 License
-
-[Specify your license here]
-
 ## 🔗 Resources
 
 - [Erigon Documentation](https://github.com/ledgerwatch/erigon)
